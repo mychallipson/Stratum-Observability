@@ -4,6 +4,7 @@ import type {
   AbTestSchema,
   CatalogKey,
   GenericPlugin,
+  PublishResult,
   StratumServiceOptions,
   StratumSnapshotListenerFn,
   UserDefinedCatalogOptions,
@@ -166,7 +167,7 @@ export class StratumService {
    * @return {Promise<boolean>} - This promise will always resolve with a boolean representing
    *  the success of the publisher
    */
-  async publish(key: CatalogKey, options?: Partial<UserDefinedEventOptions>): Promise<boolean> {
+  async publish(key: CatalogKey, options?: Partial<UserDefinedEventOptions>): Promise<boolean | unknown> {
     const catalogId = this.defaultCatalog?.id ?? '';
     return this.publishFromCatalog(catalogId, key, options);
   }
@@ -196,7 +197,7 @@ export class StratumService {
     catalogId: string,
     key: CatalogKey,
     options?: Partial<UserDefinedEventOptions>
-  ): Promise<boolean> {
+  ): Promise<boolean | unknown> {
     const catalog = this.catalogs[catalogId];
     if (!catalog || !catalog.validModels[key]) {
       this.injector.logger.debug(`Unable to publish "${key}": key not found or invalid`);
@@ -230,6 +231,45 @@ export class StratumService {
       return Promise.resolve(true);
     }
 
+    if (options?.shouldReturnResults) {
+      return Promise.allSettled(
+        publishers.map(
+          (publisher) =>
+            new Promise<PublishResult>((resolve) => {
+              queueMicrotask(async () => {
+                const internalSnapshot = cloneStratumSnapshot(snapshot);
+                internalSnapshot.eventOptions = populateDynamicEventOptions(publisher, options);
+                const isAvailable = await publisher.isAvailable(model, internalSnapshot);
+                if (isAvailable) {
+                  const content = publisher.getEventOutput(model, internalSnapshot);
+                  try {
+                    await publisher.publish(content, internalSnapshot);
+                    resolve({
+                      success: true,
+                      publisherName: publisher.name
+                    });
+                  } catch (e: unknown) {
+                    resolve({
+                      success: false,
+                      publisherName: publisher.name,
+                      error: e as Error
+                    });
+                  }
+                } else {
+                  this.injector.logger.debug(
+                    `Unable to publish "${key}": Publisher "${publisher.name}" is not available`
+                  );
+                  resolve({
+                    success: false,
+                    publisherName: publisher.name,
+                    error: new Error(`Unable to publish "${key}": Publisher "${publisher.name}" is not available`)
+                  });
+                }
+              });
+            })
+        )
+      );
+    }
     /**
      * Wait for all promises to resolve/reject. In this case we're looping over the
      * registered publishers to queue up tasks, which either resolves with `true` given
