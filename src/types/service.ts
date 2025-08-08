@@ -37,3 +37,9 @@ export interface StratumServiceOptions {
    */
   plugins?: GenericPlugin | GenericPlugin[];
 }
+
+export interface PublishResult {
+  success: boolean;
+  publisherName: string;
+  error?: Error;
+}
